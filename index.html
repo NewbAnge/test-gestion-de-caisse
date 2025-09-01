@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Journal de Caisse Collaboratif</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" type="text/css" href="https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f1f5f9; }
+        .nav-link.active { background-color: #334155; }
+        .page { display: none; }
+        .page.active { display: block; }
+        #edit-modal, #confirm-modal, #toast-container { transition: opacity 0.3s ease; }
+        @keyframes slideInUp { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .new-row { animation: slideInUp 0.5s ease-out; }
+    </style>
+</head>
+<body class="bg-slate-100">
+
+    <!-- =========== ÉCRAN DE CONNEXION =========== -->
+    <div id="login-screen" class="flex items-center justify-center h-screen">
+        <div class="w-full max-w-md bg-white p-8 rounded-xl shadow-lg">
+            <h1 class="text-3xl font-bold text-slate-800 text-center mb-6">Connexion</h1>
+            <form id="login-form" class="space-y-4">
+                <div>
+                    <label for="login-email" class="block text-sm font-medium text-slate-600 mb-1">Adresse Mail</label>
+                    <input type="email" id="login-email" class="w-full px-3 py-2 border border-slate-300 rounded-lg shadow-sm" required>
+                </div>
+                <div>
+                    <label for="login-password" class="block text-sm font-medium text-slate-600 mb-1">Mot de Passe</label>
+                    <input type="password" id="login-password" class="w-full px-3 py-2 border border-slate-300 rounded-lg shadow-sm" required>
+                </div>
+                <button type="submit" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded-lg hover:bg-blue-700 shadow-sm">Se connecter</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- =========== APPLICATION PRINCIPALE (Cachée par défaut) =========== -->
+    <div id="main-app" class="hidden h-screen w-full">
+        <div class="flex h-full">
+            <aside class="w-64 bg-slate-800 text-white flex flex-col flex-shrink-0">
+                <div class="p-6 text-2xl font-bold border-b border-slate-700 text-center">Menu</div>
+                <nav id="main-nav" class="flex-1 p-4 space-y-2">
+                    <a href="#accueil" class="nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700 active"><svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path><polyline points="9 22 9 12 15 12 15 22"></polyline></svg>Accueil</a>
+                    <a href="#synthese" class="nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700"><svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"></path><path d="M22 12A10 10 0 0 0 12 2v10z"></path></svg>Synthèse</a>
+                    <a href="#historique" class="nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700"><svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M12 7v5l4 2"></path></svg>Historique</a>
+                    <a href="#utilisateurs" class="nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700"><svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>Utilisateurs</a>
+                    <a href="#parametrage" class="nav-link flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-slate-700"><svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l-.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>Paramétrage</a>
+                </nav>
+                <div class="mt-auto p-4 border-t border-slate-700">
+                     <div id="user-info" class="text-xs text-slate-300 mb-2"></div>
+                     <button id="logout-btn" class="w-full text-left flex items-center px-4 py-2.5 text-sm font-medium rounded-lg hover:bg-red-500 hover:text-white">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                        Se déconnecter
+                     </button>
+                </div>
+            </aside>
+
+            <div class="flex-1 flex flex-col">
+                <main class="flex-1 overflow-y-auto">
+                    <!-- Les pages de l'application seront injectées ici -->
+                </main>
+                <footer class="text-center p-4 text-sm text-slate-500 border-t border-slate-200 bg-slate-100">
+                    © 2025 SudContractors. Tous droits réservés.
+                </footer>
+            </div>
+        </div>
+    </div>
+
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/toastify-js"></script>
+    
+    <script type="module">
+        // Import des fonctions Firebase
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+
+        // Configuration Firebase
+        const firebaseConfig = {
+            apiKey: "AIzaSyAGKp_7kf1IAXSa7BDv_RKLBLd5KT-n0P0",
+            authDomain: "gestion-de-caisse-e60fc.firebaseapp.com",
+            projectId: "gestion-de-caisse-e60fc",
+            storageBucket: "gestion-de-caisse-e60fc.appspot.com",
+            messagingSenderId: "9223810341",
+            appId: "1:9223810341:web:eb994459ac247623ff3ecc",
+            measurementId: "G-5W5ET7HZ0X"
+        };
+
+        // Initialisation de Firebase
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // ... le reste du code de l'application sera ici ...
+        
+    </script>
+</body>
+</html>
+
