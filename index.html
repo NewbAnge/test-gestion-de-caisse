@@ -245,7 +245,6 @@
                 });
             }
             
-            // All other functions are defined here...
             const navigation = {
                 init() { UIElements.mainNav.addEventListener('click', (e) => { const l = e.target.closest('a'); if (l) { e.preventDefault(); this.to(l.getAttribute('href')); } }); },
                 async to(hash) { 
@@ -257,20 +256,136 @@
                     if (id === 'utilisateurs') await userManager.renderUsers();
                     if (id === 'parametrage') { categoryManager.render(); accountManager.render(); renderInitialBalancesForm(); } 
                 },
-                updateSynthese() { /* ... */ },
-                async updateHistorique(filterDate = null) { /* ... */ }
+                updateSynthese() {
+                    let totalE = 0, totalS = 0;
+                    state.transactions.forEach(tx => {
+                        if (tx.type === 'entree') totalE += tx.montant; else totalS += tx.montant;
+                    });
+                    const categorySummary = state.categories.reduce((a, c) => ({ ...a, [c]: { e: 0, s: 0 } }), {});
+                    state.transactions.forEach(tx => {
+                        if (!categorySummary[tx.categorie]) categorySummary[tx.categorie] = { e: 0, s: 0 };
+                        if (tx.type === 'entree') categorySummary[tx.categorie].e += tx.montant; else categorySummary[tx.categorie].s += tx.montant;
+                    });
+                    UIElements.synthese.category.innerHTML = `<ul class="space-y-2">${Object.entries(categorySummary).map(([c, t]) => `<li class="p-2 bg-slate-50 rounded-lg"><div class="font-semibold">${c}</div><div class="flex justify-between text-sm"><span class="text-green-600">Entrées: ${formatCurrency(t.e)}</span><span class="text-red-600">Sorties: ${formatCurrency(t.s)}</span></div></li>`).join('')}</ul>`;
+                    if (summaryChart) summaryChart.destroy();
+                    summaryChart = new Chart(UIElements.synthese.chartCanvas, { type: 'doughnut', data: { labels: ['Entrées', 'Sorties'], datasets: [{ data: [totalE, totalS], backgroundColor: ['rgba(16, 185, 129, 0.7)', 'rgba(239, 68, 68, 0.7)'], borderColor: ['rgba(16, 185, 129, 1)', 'rgba(239, 68, 68, 1)'], borderWidth: 1 }] }, options: { responsive: true, maintainAspectRatio: true, cutout: '60%' } });
+                    let recapHtml = `<table class="w-full text-sm text-left text-slate-600"><thead class="text-xs text-slate-700 uppercase bg-slate-100"><tr><th class="px-4 py-3">Compte</th><th class="px-4 py-3 text-right">Solde Initial</th><th class="px-4 py-3 text-right text-green-600">Total Entrées</th><th class="px-4 py-3 text-right text-red-600">Total Sorties</th><th class="px-4 py-3 text-right">Solde Final</th></tr></thead><tbody>`;
+                    state.accounts.forEach(acc => {
+                        const txs = state.transactions.filter(t => t.compte === acc);
+                        const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
+                        const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
+                        const soldeInitial = state.soldesInitiaux[acc] || 0;
+                        const soldeFinal = soldeInitial + entrees - sorties;
+                        recapHtml += `<tr class="bg-white border-b"><td class="px-4 py-2 font-medium">${acc}</td><td class="px-4 py-2 text-right">${formatCurrency(soldeInitial)}</td><td class="px-4 py-2 text-right text-green-600">${formatCurrency(entrees)}</td><td class="px-4 py-2 text-right text-red-600">${formatCurrency(sorties)}</td><td class="px-4 py-2 text-right font-semibold">${formatCurrency(soldeFinal)}</td></tr>`;
+                    });
+                    recapHtml += '</tbody></table>';
+                    UIElements.synthese.recapTable.innerHTML = recapHtml;
+                },
+                async updateHistorique(filterDate = null) {
+                    UIElements.historique.list.innerHTML = '<li>Chargement...</li>';
+                    const keys = await firestoreService.getJournalHistory();
+                    UIElements.historique.list.innerHTML = '';
+                    keys.forEach(date => {
+                        if (!filterDate || date === filterDate) {
+                            const li = document.createElement('li');
+                            li.className = 'p-3 bg-slate-50 rounded-lg hover:bg-slate-100 cursor-pointer';
+                            li.textContent = new Date(date + 'T00:00:00').toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                            li.dataset.date = date;
+                            UIElements.historique.list.appendChild(li);
+                        }
+                    });
+                    if (UIElements.historique.list.innerHTML === '') {
+                        UIElements.historique.list.innerHTML = `<li class="p-3 text-slate-500">Aucun rapport trouvé.</li>`;
+                    }
+                }
             };
             const modal = {
-                init() { /* ... */ },
-                open(id) { /* ... */ },
-                close() { /* ... */ }
+                init() {
+                    UIElements.modal.form.addEventListener('submit', async (e) => {
+                        e.preventDefault();
+                        const id = parseInt(UIElements.modal.id.value);
+                        const docRef = doc(db, "journals", state.workingDate);
+                        const currentDoc = await getDoc(docRef);
+                        if (currentDoc.exists()) {
+                            const currentTransactions = currentDoc.data().transactions || [];
+                            const updatedTransactions = currentTransactions.map(tx => {
+                                if (tx.id === id) {
+                                    return { ...tx, numPiece: UIElements.modal.numPiece.value, libelle: UIElements.modal.libelle.value, categorie: UIElements.modal.categorie.value, montant: parseFloat(UIElements.modal.montant.value) || 0 };
+                                }
+                                return tx;
+                            });
+                            await updateDoc(docRef, { transactions: updatedTransactions });
+                        }
+                        this.close();
+                        showToast("Opération modifiée !");
+                    });
+                    UIElements.modal.cancelBtn.addEventListener('click', () => this.close());
+                },
+                open(id) {
+                    const tx = state.transactions.find(t => t.id === id);
+                    if (!tx) return;
+                    UIElements.modal.id.value = tx.id;
+                    UIElements.modal.numPiece.value = tx.numPiece;
+                    UIElements.modal.libelle.value = tx.libelle;
+                    UIElements.modal.categorie.value = tx.categorie;
+                    UIElements.modal.montant.value = tx.montant;
+                    UIElements.modal.container.classList.remove('hidden');
+                    setTimeout(() => { UIElements.modal.container.classList.remove('opacity-0'); UIElements.modal.content.classList.remove('scale-95'); }, 10);
+                },
+                close() {
+                    UIElements.modal.container.classList.add('opacity-0');
+                    UIElements.modal.content.classList.add('scale-95');
+                    setTimeout(() => UIElements.modal.container.classList.add('hidden'), 300);
+                }
             };
             const confirmationModal = {
-                init() { /* ... */ },
-                open(message, onConfirmCallback) { /* ... */ },
-                close() { /* ... */ }
+                _onConfirm: null,
+                init() {
+                    UIElements.confirmModal.cancelBtn.addEventListener('click', () => this.close());
+                    UIElements.confirmModal.confirmBtn.addEventListener('click', () => {
+                        if (typeof this._onConfirm === 'function') this._onConfirm();
+                        this.close();
+                    });
+                },
+                open(message, onConfirmCallback) {
+                    this._onConfirm = onConfirmCallback;
+                    UIElements.confirmModal.message.textContent = message;
+                    UIElements.confirmModal.container.classList.remove('hidden');
+                    setTimeout(() => { UIElements.confirmModal.container.classList.remove('opacity-0'); UIElements.confirmModal.content.classList.remove('scale-95'); }, 10);
+                },
+                close() {
+                    UIElements.confirmModal.container.classList.add('opacity-0');
+                    UIElements.confirmModal.content.classList.add('scale-95');
+                    setTimeout(() => UIElements.confirmModal.container.classList.add('hidden'), 300);
+                    this._onConfirm = null;
+                }
             };
-            const manager = (type, ui, stateKey) => { /* ... */ };
+            const manager = (type, ui, stateKey) => ({
+                init() { ui.addBtn.addEventListener('click', () => this.add()); ui.list.addEventListener('click', (e) => { if (e.target.classList.contains(`delete-${type}-btn`)) this.remove(e.target.dataset.name); }); },
+                async add() {
+                    const name = ui.input.value.trim();
+                    if (name && !state[stateKey].includes(name)) {
+                        state[stateKey].push(name);
+                        await firestoreService.saveConfig({ accounts: state.accounts, categories: state.categories });
+                        this.render();
+                        ui.input.value = '';
+                        showToast(`${type === 'cat' ? 'Catégorie' : 'Compte'} ajouté.`);
+                    }
+                },
+                remove(name) {
+                    confirmationModal.open(`Voulez-vous vraiment supprimer "${name}" ?`, async () => {
+                        state[stateKey] = state[stateKey].filter(i => i !== name);
+                        await firestoreService.saveConfig({ accounts: state.accounts, categories: state.categories });
+                        this.render();
+                        showToast(`${type === 'cat' ? 'Catégorie' : 'Compte'} supprimé.`, 'e');
+                    });
+                },
+                render() {
+                    ui.list.innerHTML = state[stateKey].map(name => `<li class="flex justify-between items-center p-2 bg-slate-50 rounded-lg"><span>${name}</span><button data-name="${name}" class="delete-${type}-btn text-red-500 font-bold text-xl leading-none">&times;</button></li>`).join('');
+                    this.populateDropdowns();
+                },
+                populateDropdowns() { if (ui.dropdowns) { const html = state[stateKey].map(name => `<option value="${name}">${name}</option>`).join(''); ui.dropdowns.forEach(dd => dd.innerHTML = html); } }
+            });
             const categoryManager = manager('cat', { addBtn: UIElements.parametrage.addCatBtn, input: UIElements.parametrage.newCatInput, list: UIElements.parametrage.catList, dropdowns: [UIElements.accueil.categorieSelect, UIElements.modal.categorie] }, 'categories');
             const accountManager = manager('acc', { addBtn: UIElements.parametrage.addAccBtn, input: UIElements.parametrage.newAccInput, list: UIElements.parametrage.accList, dropdowns: [UIElements.accueil.compteSelect] }, 'accounts');
             
@@ -290,6 +405,7 @@
                     }
                     try {
                         showToast("Création de l'utilisateur...");
+                        // This is a simplified approach. In a real app, user creation would be handled by an admin function.
                         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
                         const user = userCredential.user;
                         await firestoreService.saveUser(user.uid, { name, email });
@@ -325,12 +441,75 @@
                 }
             };
             
-            const renderAll = () => { /* ... */ };
-            const renderAccountCards = () => { /* ... */ };
-            const renderReportTable = () => { /* ... */ };
-            const updateTotals = () => { /* ... */ };
-            const editInitialBalance = () => { /* ... */ };
-            const renderInitialBalancesForm = () => { /* ... */ };
+            const renderAll = () => {
+                renderAccountCards();
+                renderReportTable();
+                categoryManager.populateDropdowns();
+                accountManager.populateDropdowns();
+                renderInitialBalancesForm();
+            };
+            const renderAccountCards = () => {
+                UIElements.accueil.cardsContainer.innerHTML = state.accounts.map(acc => `<div id="card-${acc}" data-name="${acc}" class="bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer"><h3 class="text-sm font-medium text-slate-500">${acc}</h3><p id="solde-${acc}-card" class="text-3xl font-bold mt-2">0</p></div>`).join('');
+                state.accounts.forEach(acc => document.getElementById(`card-${acc}`).addEventListener('click', () => editInitialBalance(acc)));
+                 updateTotals();
+            };
+            const renderReportTable = () => {
+                UIElements.accueil.header.innerHTML = `<tr><th class="px-4 py-3" rowspan="2">N° PIÈCE</th><th class="px-4 py-3" rowspan="2">Libellé</th><th class="px-4 py-3" rowspan="2">Catégorie</th>${state.accounts.map(acc => `<th class="px-4 py-3 text-center border-l" colspan="2">${acc}</th>`).join('')}<th rowspan="2"></th></tr><tr>${state.accounts.map(() => `<th class="px-4 py-3 text-center border-l text-green-600">Entrées</th><th class="px-4 py-3 text-center text-red-600">Sorties</th>`).join('')}</tr>`;
+                UIElements.accueil.body.innerHTML = `<tr class="bg-slate-50 font-semibold"><td class="px-4 py-2" colspan="3">Solde initial</td>${state.accounts.map(acc => `<td class="px-4 py-2 text-center text-slate-500" colspan="2">${formatCurrency(state.soldesInitiaux[acc] || 0)}</td>`).join('')}<td></td></tr>`;
+                const sortedTransactions = [...state.transactions].sort((a, b) => a.id - b.id);
+                sortedTransactions.forEach(tx => {
+                    const row = UIElements.accueil.body.insertRow(-1);
+                    row.className = 'bg-white border-b border-slate-200 hover:bg-slate-50 new-row';
+                    let cells = `<td class="px-4 py-2">${tx.numPiece}</td><td class="px-4 py-2">${tx.libelle}</td><td class="px-4 py-2 text-xs text-slate-500">${tx.categorie}</td>`;
+                    state.accounts.forEach(acc => {
+                        if (acc === tx.compte) {
+                            cells += tx.type === 'entree' ? `<td class="px-4 py-2 text-center text-green-600">${formatCurrency(tx.montant)}</td><td class="px-4 py-2 text-center"></td>` : `<td class="px-4 py-2 text-center"></td><td class="px-4 py-2 text-center text-red-600">${formatCurrency(tx.montant)}</td>`;
+                        } else { cells += `<td class="px-4 py-2"></td><td class="px-4 py-2"></td>`; }
+                    });
+                    cells += `<td class="px-2 py-2 text-center"><button class="edit-btn text-blue-500 p-1" data-id="${tx.id}">✏️</button><button class="delete-btn text-red-500 p-1 font-bold" data-id="${tx.id}">&times;</button></td>`;
+                    row.innerHTML = cells;
+                });
+                UIElements.accueil.footer.innerHTML = `<tr class="border-t-2 border-slate-300"><td class="px-4 py-3" colspan="3">TOTAL OPÉRATIONS</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); return `<td class="px-4 py-3 text-center text-green-600">${formatCurrency(e)}</td><td class="px-4 py-3 text-center text-red-600">${formatCurrency(s)}</td>`; }).join('')}<td></td></tr>
+                <tr class="border-t-2 border-slate-300 bg-slate-200 font-bold text-slate-800"><td class="px-4 py-3" colspan="3">SOLDE FINAL</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); const soldeFinal = (state.soldesInitiaux[acc] || 0) + e - s; return `<td class="px-4 py-3 text-center" colspan="2">${formatCurrency(soldeFinal)}</td>`; }).join('')}<td></td></tr>`;
+            };
+            const updateTotals = () => { 
+                state.accounts.forEach(acc => {
+                    const txs = state.transactions.filter(t => t.compte === acc);
+                    const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
+                    const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
+                    const soldeFinal = (state.soldesInitiaux[acc] || 0) + entrees - sorties;
+                    const card = document.getElementById(`card-${acc}`);
+                    const cardText = document.getElementById(`solde-${acc}-card`);
+                    if(card && cardText){
+                        cardText.textContent = formatCurrency(soldeFinal);
+                        card.className = 'bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer';
+                        cardText.className = 'text-3xl font-bold mt-2';
+                        if (soldeFinal > 0) { card.classList.add('bg-green-50', 'border-green-300'); cardText.classList.add('text-green-800'); }
+                        else if (soldeFinal < 0) { card.classList.add('bg-red-50', 'border-red-300'); cardText.classList.add('text-red-800'); }
+                        else { card.classList.add('bg-slate-50', 'border-slate-300'); cardText.classList.add('text-slate-800'); }
+                    }
+                });
+            };
+            const editInitialBalance = (acc) => {
+                const soldeActuel = state.soldesInitiaux[acc] || 0;
+                const newSoldeStr = prompt(`Modifier le solde initial pour ${acc}:`, soldeActuel);
+                if (newSoldeStr !== null) {
+                    const newSolde = parseFloat(newSoldeStr.replace(/,/g, '.'));
+                    if (!isNaN(newSolde)) { 
+                        const newBalances = { ...state.soldesInitiaux, [acc]: newSolde };
+                        firestoreService.saveJournal(state.workingDate, { manualInitialBalances: newBalances });
+                        showToast('Solde initial manuel sauvegardé.'); 
+                    } else { showToast("Veuillez entrer un nombre valide.", "e"); }
+                }
+            };
+            const renderInitialBalancesForm = () => { 
+                UIElements.parametrage.initialBalancesForm.innerHTML = '';
+                state.accounts.forEach(acc => {
+                    const div = document.createElement('div');
+                    div.innerHTML = `<label for="balance-${acc}" class="block text-sm font-medium text-slate-600 mb-1">${acc}</label><input type="number" step="any" id="balance-${acc}" name="${acc}" value="${state.soldesInitiaux[acc] || 0}" class="w-full px-3 py-2 border border-slate-300 rounded-lg shadow-sm">`;
+                    UIElements.parametrage.initialBalancesForm.appendChild(div);
+                });
+            };
             const printReport = () => { /* ... */ };
 
             function init() {
@@ -350,190 +529,88 @@
                 });
 
                 UIElements.buttons.logout.addEventListener('click', () => signOut(auth));
-                // All other event listeners
-                UIElements.parametrage.changeDateBtn.addEventListener('click', async () => { /* ... */ });
-                UIElements.parametrage.saveBalancesBtn.addEventListener('click', async () => { /* ... */ });
-                UIElements.buttons.print.addEventListener('click', printReport);
-                UIElements.buttons.prevDay.addEventListener('click', async () => { /* ... */ });
-                UIElements.buttons.nextDay.addEventListener('click', async () => { /* ... */ });
-                UIElements.accueil.form.addEventListener('submit', async (e) => { /* ... */ });
-                UIElements.accueil.body.addEventListener('click', async (e) => { /* ... */ });
-                UIElements.historique.list.addEventListener('click', (e) => { /* ... */ });
-                UIElements.historique.filterBtn.addEventListener('click', () => { /* ... */ });
-                UIElements.historique.clearFilterBtn.addEventListener('click', () => { /* ... */ });
-            }
-            
-            // Re-implementing the function bodies
-            navigation.updateSynthese = function() {
-                let totalE = 0, totalS = 0;
-                state.transactions.forEach(tx => {
-                    if (tx.type === 'entree') totalE += tx.montant; else totalS += tx.montant;
-                });
-                const categorySummary = state.categories.reduce((a, c) => ({ ...a, [c]: { e: 0, s: 0 } }), {});
-                state.transactions.forEach(tx => {
-                    if (!categorySummary[tx.categorie]) categorySummary[tx.categorie] = { e: 0, s: 0 };
-                    if (tx.type === 'entree') categorySummary[tx.categorie].e += tx.montant; else categorySummary[tx.categorie].s += tx.montant;
-                });
-                UIElements.synthese.category.innerHTML = `<ul class="space-y-2">${Object.entries(categorySummary).map(([c, t]) => `<li class="p-2 bg-slate-50 rounded-lg"><div class="font-semibold">${c}</div><div class="flex justify-between text-sm"><span class="text-green-600">Entrées: ${formatCurrency(t.e)}</span><span class="text-red-600">Sorties: ${formatCurrency(t.s)}</span></div></li>`).join('')}</ul>`;
-                if (summaryChart) summaryChart.destroy();
-                summaryChart = new Chart(UIElements.synthese.chartCanvas, { type: 'doughnut', data: { labels: ['Entrées', 'Sorties'], datasets: [{ data: [totalE, totalS], backgroundColor: ['rgba(16, 185, 129, 0.7)', 'rgba(239, 68, 68, 0.7)'], borderColor: ['rgba(16, 185, 129, 1)', 'rgba(239, 68, 68, 1)'], borderWidth: 1 }] }, options: { responsive: true, maintainAspectRatio: true, cutout: '60%' } });
-                let recapHtml = `<table class="w-full text-sm text-left text-slate-600"><thead class="text-xs text-slate-700 uppercase bg-slate-100"><tr><th class="px-4 py-3">Compte</th><th class="px-4 py-3 text-right">Solde Initial</th><th class="px-4 py-3 text-right text-green-600">Total Entrées</th><th class="px-4 py-3 text-right text-red-600">Total Sorties</th><th class="px-4 py-3 text-right">Solde Final</th></tr></thead><tbody>`;
-                state.accounts.forEach(acc => {
-                    const txs = state.transactions.filter(t => t.compte === acc);
-                    const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
-                    const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
-                    const soldeInitial = state.soldesInitiaux[acc] || 0;
-                    const soldeFinal = soldeInitial + entrees - sorties;
-                    recapHtml += `<tr class="bg-white border-b"><td class="px-4 py-2 font-medium">${acc}</td><td class="px-4 py-2 text-right">${formatCurrency(soldeInitial)}</td><td class="px-4 py-2 text-right text-green-600">${formatCurrency(entrees)}</td><td class="px-4 py-2 text-right text-red-600">${formatCurrency(sorties)}</td><td class="px-4 py-2 text-right font-semibold">${formatCurrency(soldeFinal)}</td></tr>`;
-                });
-                recapHtml += '</tbody></table>';
-                UIElements.synthese.recapTable.innerHTML = recapHtml;
-            };
-            navigation.updateHistorique = async function(filterDate = null) {
-                UIElements.historique.list.innerHTML = '<li>Chargement...</li>';
-                const keys = await firestoreService.getJournalHistory();
-                UIElements.historique.list.innerHTML = '';
-                keys.forEach(date => {
-                    if (!filterDate || date === filterDate) {
-                        const li = document.createElement('li');
-                        li.className = 'p-3 bg-slate-50 rounded-lg hover:bg-slate-100 cursor-pointer';
-                        li.textContent = new Date(date + 'T00:00:00').toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                        li.dataset.date = date;
-                        UIElements.historique.list.appendChild(li);
+                UIElements.parametrage.changeDateBtn.addEventListener('click', async () => {
+                    const newDate = UIElements.parametrage.workDateInput.value;
+                    if (newDate && newDate !== state.workingDate) { 
+                        await changeWorkingDate(newDate); 
+                        showToast(`Journal du ${newDate} chargé.`); 
                     }
                 });
-                if (UIElements.historique.list.innerHTML === '') {
-                    UIElements.historique.list.innerHTML = `<li class="p-3 text-slate-500">Aucun rapport trouvé.</li>`;
-                }
-            };
-            modal.init = function() {
-                UIElements.modal.form.addEventListener('submit', async (e) => {
+                UIElements.parametrage.saveBalancesBtn.addEventListener('click', async () => {
+                    const formData = new FormData(UIElements.parametrage.initialBalancesForm);
+                    const newBalances = {};
+                    for (let [account, value] of formData.entries()) {
+                         newBalances[account] = parseFloat(value) || 0;
+                    }
+                    await firestoreService.saveJournal(state.workingDate, { manualInitialBalances: newBalances });
+                    showToast("Soldes initiaux manuels sauvegardés pour aujourd'hui !");
+                });
+                UIElements.buttons.print.addEventListener('click', printReport);
+                UIElements.buttons.prevDay.addEventListener('click', async () => {
+                    const currentDate = new Date(state.workingDate);
+                    currentDate.setDate(currentDate.getDate() - 1);
+                    await changeWorkingDate(currentDate.toISOString().split('T')[0]);
+                });
+                UIElements.buttons.nextDay.addEventListener('click', async () => {
+                    const currentDate = new Date(state.workingDate);
+                    currentDate.setDate(currentDate.getDate() + 1);
+                    await changeWorkingDate(currentDate.toISOString().split('T')[0]);
+                });
+                UIElements.accueil.form.addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const id = parseInt(UIElements.modal.id.value);
+                    const data = { numPiece: document.getElementById('num-piece').value, libelle: document.getElementById('libelle').value, categorie: UIElements.accueil.categorieSelect.value, compte: UIElements.accueil.compteSelect.value, entree: parseFloat(document.getElementById('montant-entree').value) || 0, sortie: parseFloat(document.getElementById('montant-sortie').value) || 0 };
+                    if (!data.libelle || (data.entree <= 0 && data.sortie <= 0) || (data.entree > 0 && data.sortie > 0)) { showToast("Saisir un libellé et un seul montant.", 'e'); return; }
+                    const newTransaction = {
+                        id: Date.now(),
+                        ...data, 
+                        type: data.entree > 0 ? 'entree' : 'sortie', 
+                        montant: data.entree > 0 ? data.entree : data.sortie,
+                        createdBy: state.userId,
+                        createdByName: state.userName,
+                    };
                     const docRef = doc(db, "journals", state.workingDate);
                     const currentDoc = await getDoc(docRef);
                     if (currentDoc.exists()) {
-                        const currentTransactions = currentDoc.data().transactions || [];
-                        const updatedTransactions = currentTransactions.map(tx => {
-                            if (tx.id === id) {
-                                return { ...tx, numPiece: UIElements.modal.numPiece.value, libelle: UIElements.modal.libelle.value, categorie: UIElements.modal.categorie.value, montant: parseFloat(UIElements.modal.montant.value) || 0 };
-                            }
-                            return tx;
-                        });
-                        await updateDoc(docRef, { transactions: updatedTransactions });
+                        await updateDoc(docRef, { transactions: arrayUnion(newTransaction) });
+                    } else {
+                        await firestoreService.saveJournal(state.workingDate, { transactions: [newTransaction], soldesInitiaux: state.soldesInitiaux });
                     }
-                    this.close();
-                    showToast("Opération modifiée !");
+                    UIElements.accueil.form.reset();
+                    document.getElementById('libelle').focus();
                 });
-                UIElements.modal.cancelBtn.addEventListener('click', () => this.close());
-            };
-            modal.open = function(id) {
-                const tx = state.transactions.find(t => t.id === id);
-                if (!tx) return;
-                UIElements.modal.id.value = tx.id;
-                UIElements.modal.numPiece.value = tx.numPiece;
-                UIElements.modal.libelle.value = tx.libelle;
-                UIElements.modal.categorie.value = tx.categorie;
-                UIElements.modal.montant.value = tx.montant;
-                UIElements.modal.container.classList.remove('hidden');
-                setTimeout(() => { UIElements.modal.container.classList.remove('opacity-0'); UIElements.modal.content.classList.remove('scale-95'); }, 10);
-            };
-            modal.close = function() {
-                UIElements.modal.container.classList.add('opacity-0');
-                UIElements.modal.content.classList.add('scale-95');
-                setTimeout(() => UIElements.modal.container.classList.add('hidden'), 300);
-            };
-            confirmationModal.init = function() {
-                UIElements.confirmModal.cancelBtn.addEventListener('click', () => this.close());
-                UIElements.confirmModal.confirmBtn.addEventListener('click', () => {
-                    if (typeof this._onConfirm === 'function') this._onConfirm();
-                    this.close();
-                });
-            };
-            confirmationModal.open = function(message, onConfirmCallback) {
-                this._onConfirm = onConfirmCallback;
-                UIElements.confirmModal.message.textContent = message;
-                UIElements.confirmModal.container.classList.remove('hidden');
-                setTimeout(() => { UIElements.confirmModal.container.classList.remove('opacity-0'); UIElements.confirmModal.content.classList.remove('scale-95'); }, 10);
-            };
-            confirmationModal.close = function() {
-                UIElements.confirmModal.container.classList.add('opacity-0');
-                UIElements.confirmModal.content.classList.add('scale-95');
-                setTimeout(() => UIElements.confirmModal.container.classList.add('hidden'), 300);
-                this._onConfirm = null;
-            };
-            renderAll = function() {
-                renderAccountCards();
-                renderReportTable();
-                categoryManager.populateDropdowns();
-                accountManager.populateDropdowns();
-                renderInitialBalancesForm();
-            };
-            renderAccountCards = function() {
-                UIElements.accueil.cardsContainer.innerHTML = state.accounts.map(acc => `<div id="card-${acc}" data-name="${acc}" class="bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer"><h3 class="text-sm font-medium text-slate-500">${acc}</h3><p id="solde-${acc}-card" class="text-3xl font-bold mt-2">0</p></div>`).join('');
-                state.accounts.forEach(acc => document.getElementById(`card-${acc}`).addEventListener('click', () => editInitialBalance(acc)));
-            };
-            renderReportTable = function() {
-                UIElements.accueil.header.innerHTML = `<tr><th class="px-4 py-3" rowspan="2">N° PIÈCE</th><th class="px-4 py-3" rowspan="2">Libellé</th><th class="px-4 py-3" rowspan="2">Catégorie</th>${state.accounts.map(acc => `<th class="px-4 py-3 text-center border-l" colspan="2">${acc}</th>`).join('')}<th rowspan="2"></th></tr><tr>${state.accounts.map(() => `<th class="px-4 py-3 text-center border-l text-green-600">Entrées</th><th class="px-4 py-3 text-center text-red-600">Sorties</th>`).join('')}</tr>`;
-                UIElements.accueil.body.innerHTML = `<tr class="bg-slate-50 font-semibold"><td class="px-4 py-2" colspan="3">Solde initial</td>${state.accounts.map(acc => `<td class="px-4 py-2 text-center text-slate-500" colspan="2">${formatCurrency(state.soldesInitiaux[acc] || 0)}</td>`).join('')}<td></td></tr>`;
-                const sortedTransactions = [...state.transactions].sort((a, b) => a.id - b.id);
-                sortedTransactions.forEach(tx => {
-                    const row = UIElements.accueil.body.insertRow(-1);
-                    row.className = 'bg-white border-b border-slate-200 hover:bg-slate-50 new-row';
-                    let cells = `<td class="px-4 py-2">${tx.numPiece}</td><td class="px-4 py-2">${tx.libelle}</td><td class="px-4 py-2 text-xs text-slate-500">${tx.categorie}</td>`;
-                    state.accounts.forEach(acc => {
-                        if (acc === tx.compte) {
-                            cells += tx.type === 'entree' ? `<td class="px-4 py-2 text-center text-green-600">${formatCurrency(tx.montant)}</td><td class="px-4 py-2 text-center"></td>` : `<td class="px-4 py-2 text-center"></td><td class="px-4 py-2 text-center text-red-600">${formatCurrency(tx.montant)}</td>`;
-                        } else { cells += `<td class="px-4 py-2"></td><td class="px-4 py-2"></td>`; }
-                    });
-                    cells += `<td class="px-2 py-2 text-center"><button class="edit-btn text-blue-500 p-1" data-id="${tx.id}">✏️</button><button class="delete-btn text-red-500 p-1 font-bold" data-id="${tx.id}">&times;</button></td>`;
-                    row.innerHTML = cells;
-                });
-                UIElements.accueil.footer.innerHTML = `<tr class="border-t-2 border-slate-300"><td class="px-4 py-3" colspan="3">TOTAL OPÉRATIONS</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); return `<td class="px-4 py-3 text-center text-green-600">${formatCurrency(e)}</td><td class="px-4 py-3 text-center text-red-600">${formatCurrency(s)}</td>`; }).join('')}<td></td></tr>
-                <tr class="border-t-2 border-slate-300 bg-slate-200 font-bold text-slate-800"><td class="px-4 py-3" colspan="3">SOLDE FINAL</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); const soldeFinal = (state.soldesInitiaux[acc] || 0) + e - s; return `<td class="px-4 py-3 text-center" colspan="2">${formatCurrency(soldeFinal)}</td>`; }).join('')}<td></td></tr>`;
-                updateTotals();
-            };
-            updateTotals = function() { 
-                state.accounts.forEach(acc => {
-                    const txs = state.transactions.filter(t => t.compte === acc);
-                    const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
-                    const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
-                    const soldeFinal = (state.soldesInitiaux[acc] || 0) + entrees - sorties;
-                    const card = document.getElementById(`card-${acc}`);
-                    const cardText = document.getElementById(`solde-${acc}-card`);
-                    if(card && cardText){
-                        cardText.textContent = formatCurrency(soldeFinal);
-                        card.className = 'bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer';
-                        cardText.className = 'text-3xl font-bold mt-2';
-                        if (soldeFinal > 0) { card.classList.add('bg-green-50', 'border-green-300'); cardText.classList.add('text-green-800'); }
-                        else if (soldeFinal < 0) { card.classList.add('bg-red-50', 'border-red-300'); cardText.classList.add('text-red-800'); }
-                        else { card.classList.add('bg-slate-50', 'border-slate-300'); cardText.classList.add('text-slate-800'); }
+                UIElements.accueil.body.addEventListener('click', async (e) => {
+                    const delBtn = e.target.closest('.delete-btn');
+                    const editBtn = e.target.closest('.edit-btn');
+                    if (delBtn) { 
+                        const id = parseInt(delBtn.dataset.id); 
+                        const currentDoc = await firestoreService.getJournal(state.workingDate);
+                        const txToDelete = (currentDoc.transactions || []).find(tx => tx.id === id);
+                        if (txToDelete) {
+                            confirmationModal.open('Supprimer définitivement cette opération ?', async () => { 
+                                const docRef = doc(db, "journals", state.workingDate);
+                                await updateDoc(docRef, { transactions: arrayRemove(txToDelete) });
+                                showToast("Opération supprimée.", "e"); 
+                            });
+                        }
                     }
+                    if (editBtn) modal.open(parseInt(editBtn.dataset.id));
                 });
-            };
-            editInitialBalance = function(acc) {
-                const soldeActuel = state.soldesInitiaux[acc] || 0;
-                const newSoldeStr = prompt(`Modifier le solde initial pour ${acc}:`, soldeActuel);
-                if (newSoldeStr !== null) {
-                    const newSolde = parseFloat(newSoldeStr.replace(/,/g, '.'));
-                    if (!isNaN(newSolde)) { 
-                        const newBalances = { ...state.soldesInitiaux, [acc]: newSolde };
-                        firestoreService.saveJournal(state.workingDate, { manualInitialBalances: newBalances });
-                        showToast('Solde initial manuel sauvegardé.'); 
-                    } else { showToast("Veuillez entrer un nombre valide.", "e"); }
-                }
-            };
-            renderInitialBalancesForm = function() { 
-                UIElements.parametrage.initialBalancesForm.innerHTML = '';
-                state.accounts.forEach(acc => {
-                    const div = document.createElement('div');
-                    div.innerHTML = `<label for="balance-${acc}" class="block text-sm font-medium text-slate-600 mb-1">${acc}</label><input type="number" step="any" id="balance-${acc}" name="${acc}" value="${state.soldesInitiaux[acc] || 0}" class="w-full px-3 py-2 border border-slate-300 rounded-lg shadow-sm">`;
-                    UIElements.parametrage.initialBalancesForm.appendChild(div);
+                UIElements.historique.list.addEventListener('click', (e) => { 
+                    if (e.target.tagName === 'LI' && e.target.dataset.date) { 
+                        changeWorkingDate(e.target.dataset.date); 
+                        navigation.to('#accueil'); 
+                        showToast(`Journal du ${e.target.dataset.date} chargé.`); 
+                    } 
                 });
-            };
-            printReport = function() { /* ... */ };
-            
-            init(); // Start the main application logic
+                UIElements.historique.filterBtn.addEventListener('click', () => { 
+                    const filterDate = UIElements.historique.filterDateInput.value; 
+                    navigation.updateHistorique(filterDate || null);
+                });
+                UIElements.historique.clearFilterBtn.addEventListener('click', () => { 
+                    UIElements.historique.filterDateInput.value = ''; 
+                    navigation.updateHistorique(); 
+                });
+            }
         }
     </script>
 </body>
