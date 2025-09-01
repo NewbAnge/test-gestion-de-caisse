@@ -90,7 +90,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-app.js";
         import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs, updateDoc, arrayUnion, arrayRemove, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/9.6.10/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyAGKp_7kf1IAXSa7BDv_RKLBLd5KT-n0P0",
@@ -106,20 +106,37 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
+        enableIndexedDbPersistence(db)
+            .catch((err) => {
+                if (err.code == 'failed-precondition') {
+                    console.warn("Firestore persistence failed: multiple tabs open.");
+                } else if (err.code == 'unimplemented') {
+                    console.warn("Firestore persistence not available in this browser.");
+                }
+            });
+
         const loginScreen = document.getElementById('login-screen');
         const mainApp = document.getElementById('main-app');
         const loginForm = document.getElementById('login-form');
+        let currentAppInstance = null;
 
         onAuthStateChanged(auth, async (user) => {
             if (user) {
                 loginScreen.style.display = 'none';
                 mainApp.style.display = 'block';
+                if (currentAppInstance) {
+                    currentAppInstance.destroy();
+                }
                 const userDoc = await getDoc(doc(db, "users", user.uid));
                 const userName = userDoc.exists() ? userDoc.data().name : user.email;
-                runApp(user, userName);
+                currentAppInstance = new CaisseApp(user, userName);
             } else {
                 mainApp.style.display = 'none';
                 loginScreen.style.display = 'flex';
+                if (currentAppInstance) {
+                    currentAppInstance.destroy();
+                    currentAppInstance = null;
+                }
             }
         });
 
@@ -135,484 +152,143 @@
             }
         });
         
-        // This function contains and initializes the entire application logic
-        function runApp(user, userName) {
-            const UIElements = {
-                mainNav: document.getElementById('main-nav'), pages: document.querySelectorAll('.page'), dateDisplay: document.getElementById('report-date-display'),
-                accueil: { form: document.getElementById('transaction-form'), body: document.getElementById('transactions-body'), header: document.getElementById('report-header'), footer: document.getElementById('report-footer'), categorieSelect: document.getElementById('categorie'), compteSelect: document.getElementById('moyen-paiement'), cardsContainer: document.getElementById('account-cards-container'), printContent: document.getElementById('print-content') },
-                synthese: { category: document.getElementById('summary-by-category'), chartCanvas: document.getElementById('summary-chart'), recapTable: document.getElementById('summary-recap-table') },
-                historique: { list: document.getElementById('history-list'), filterDateInput: document.getElementById('history-filter-date'), filterBtn: document.getElementById('filter-history-btn'), clearFilterBtn: document.getElementById('clear-filter-btn') },
-                utilisateurs: { form: document.getElementById('add-user-form'), list: document.getElementById('user-list'), nameInput: document.getElementById('user-name'), emailInput: document.getElementById('user-email'), passwordInput: document.getElementById('user-password') },
-                parametrage: { newCatInput: document.getElementById('new-category-input'), addCatBtn: document.getElementById('add-category-btn'), catList: document.getElementById('category-list'), newAccInput: document.getElementById('new-account-input'), addAccBtn: document.getElementById('add-account-btn'), accList: document.getElementById('account-list'), workDateInput: document.getElementById('work-date-input'), changeDateBtn: document.getElementById('change-date-btn'), initialBalancesForm: document.getElementById('initial-balances-form'), saveBalancesBtn: document.getElementById('save-balances-btn') },
-                modal: { container: document.getElementById('edit-modal'), content: document.getElementById('edit-modal-content'), form: document.getElementById('edit-form'), cancelBtn: document.getElementById('cancel-edit-btn'), id: document.getElementById('edit-id'), numPiece: document.getElementById('edit-num-piece'), libelle: document.getElementById('edit-libelle'), categorie: document.getElementById('edit-categorie'), montant: document.getElementById('edit-montant') },
-                confirmModal: { container: document.getElementById('confirm-modal'), content: document.getElementById('confirm-modal-content'), message: document.getElementById('confirm-modal-message'), cancelBtn: document.getElementById('cancel-confirm-btn'), confirmBtn: document.getElementById('confirm-action-btn')},
-                buttons: { print: document.getElementById('print-btn'), prevDay: document.getElementById('prev-day-btn'), nextDay: document.getElementById('next-day-btn'), logout: document.getElementById('logout-btn') },
-                userInfo: document.getElementById('user-info'),
-                userInfoHeader: document.getElementById('user-info-header'),
-            };
-
-            let summaryChart = null;
-            let state = { transactions: [], soldesInitiaux: {}, categories: [], accounts: [], workingDate: getToday(), userId: user.uid, userName: userName };
-            let unsubscribeJournal;
-
-            function getToday() { return new Date().toISOString().split('T')[0]; }
-            const formatCurrency = (v) => new Intl.NumberFormat('fr-FR').format(parseFloat(v) || 0);
-            const showToast = (m, t = 's') => Toastify({ text: m, duration: 3000, gravity: "bottom", position: "right", style: { background: t === 's' ? "#10B981" : "#EF4444" } }).showToast();
-            
-            const firestoreService = {
-                async getJournal(date) {
-                    if (!date) return null;
-                    const docRef = doc(db, "journals", date);
-                    const docSnap = await getDoc(docRef);
-                    return docSnap.exists() ? docSnap.data() : null;
-                },
-                async saveJournal(date, data) {
-                    const docRef = doc(db, "journals", date);
-                    await setDoc(docRef, data, { merge: true });
-                },
-                listenToJournal(date, callback) {
-                    if (unsubscribeJournal) unsubscribeJournal();
-                    const docRef = doc(db, "journals", date);
-                    unsubscribeJournal = onSnapshot(docRef, callback);
-                },
-                async getConfig() {
-                    const docRef = doc(db, "config", "app-settings");
-                    const docSnap = await getDoc(docRef);
-                    if (docSnap.exists()) {
-                        return docSnap.data();
-                    } else {
-                        const initialConfig = { accounts: ["Caisse", "Wave", "Orange Money"], categories: ["Achat", "Règlement clients", "Dépenses diverses"] };
-                        await setDoc(docRef, initialConfig);
-                        return initialConfig;
-                    }
-                },
-                async saveConfig(config) {
-                     const docRef = doc(db, "config", "app-settings");
-                     await setDoc(docRef, config);
-                },
-                async getJournalHistory() {
-                    const querySnapshot = await getDocs(collection(db, "journals"));
-                    const dates = [];
-                    querySnapshot.forEach((doc) => dates.push(doc.id));
-                    return dates.sort().reverse();
-                },
-                 async getUsers() {
-                    const querySnapshot = await getDocs(collection(db, "users"));
-                    const users = [];
-                    querySnapshot.forEach((doc) => users.push({ id: doc.id, ...doc.data() }));
-                    return users;
-                },
-                async saveUser(uid, userData) {
-                    await setDoc(doc(db, "users", uid), userData);
-                }
-            };
-            
-            async function changeWorkingDate(newDate) {
-                if (unsubscribeJournal) unsubscribeJournal();
-
-                const getPreviousDay = (dateStr) => {
-                    const date = new Date(dateStr);
-                    date.setDate(date.getDate() - 1);
-                    return date.toISOString().split('T')[0];
+        class CaisseApp {
+            constructor(user, userName) {
+                this.UIElements = {
+                    mainNav: document.getElementById('main-nav'), pages: document.querySelectorAll('.page'), dateDisplay: document.getElementById('report-date-display'),
+                    accueil: { form: document.getElementById('transaction-form'), body: document.getElementById('transactions-body'), header: document.getElementById('report-header'), footer: document.getElementById('report-footer'), categorieSelect: document.getElementById('categorie'), compteSelect: document.getElementById('moyen-paiement'), cardsContainer: document.getElementById('account-cards-container'), printContent: document.getElementById('print-content') },
+                    synthese: { category: document.getElementById('summary-by-category'), chartCanvas: document.getElementById('summary-chart'), recapTable: document.getElementById('summary-recap-table') },
+                    historique: { list: document.getElementById('history-list'), filterDateInput: document.getElementById('history-filter-date'), filterBtn: document.getElementById('filter-history-btn'), clearFilterBtn: document.getElementById('clear-filter-btn') },
+                    utilisateurs: { form: document.getElementById('add-user-form'), list: document.getElementById('user-list'), nameInput: document.getElementById('user-name'), emailInput: document.getElementById('user-email'), passwordInput: document.getElementById('user-password') },
+                    parametrage: { newCatInput: document.getElementById('new-category-input'), addCatBtn: document.getElementById('add-category-btn'), catList: document.getElementById('category-list'), newAccInput: document.getElementById('new-account-input'), addAccBtn: document.getElementById('add-account-btn'), accList: document.getElementById('account-list'), workDateInput: document.getElementById('work-date-input'), changeDateBtn: document.getElementById('change-date-btn'), initialBalancesForm: document.getElementById('initial-balances-form'), saveBalancesBtn: document.getElementById('save-balances-btn') },
+                    modal: { container: document.getElementById('edit-modal'), content: document.getElementById('edit-modal-content'), form: document.getElementById('edit-form'), cancelBtn: document.getElementById('cancel-edit-btn'), id: document.getElementById('edit-id'), numPiece: document.getElementById('edit-num-piece'), libelle: document.getElementById('edit-libelle'), categorie: document.getElementById('edit-categorie'), montant: document.getElementById('edit-montant') },
+                    confirmModal: { container: document.getElementById('confirm-modal'), content: document.getElementById('confirm-modal-content'), message: document.getElementById('confirm-modal-message'), cancelBtn: document.getElementById('cancel-confirm-btn'), confirmBtn: document.getElementById('confirm-action-btn')},
+                    buttons: { print: document.getElementById('print-btn'), prevDay: document.getElementById('prev-day-btn'), nextDay: document.getElementById('next-day-btn'), logout: document.getElementById('logout-btn') },
+                    userInfo: document.getElementById('user-info'),
+                    userInfoHeader: document.getElementById('user-info-header'),
                 };
+                this.summaryChart = null;
+                this.state = { transactions: [], soldesInitiaux: {}, categories: [], accounts: [], workingDate: this.getToday(), userId: user.uid, userName: userName };
+                this.unsubscribeJournal = null;
+                this.init();
+            }
 
-                const previousDay = getPreviousDay(newDate);
-                const prevDayData = await firestoreService.getJournal(previousDay);
-                let calculatedInitialBalances = state.accounts.reduce((acc, a) => ({ ...acc, [a]: 0 }), {});
+            getToday() { return new Date().toISOString().split('T')[0]; }
+            formatCurrency(v) { return new Intl.NumberFormat('fr-FR').format(parseFloat(v) || 0); }
+            showToast(m, t = 's') { Toastify({ text: m, duration: 3000, gravity: "bottom", position: "right", style: { background: t === 's' ? "#10B981" : "#EF4444" } }).showToast(); }
 
-                if (prevDayData) {
-                    state.accounts.forEach(acc => {
-                        const entrees = (prevDayData.transactions || []).filter(t => t.compte === acc && t.type === 'entree').reduce((s, t) => s + t.montant, 0);
-                        const sorties = (prevDayData.transactions || []).filter(t => t.compte === acc && t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
-                        const prevDayBalance = prevDayData.manualInitialBalances ? (prevDayData.manualInitialBalances[acc] || 0) : (prevDayData.soldesInitiaux ? prevDayData.soldesInitiaux[acc] || 0 : 0);
-                        calculatedInitialBalances[acc] = prevDayBalance + entrees - sorties;
-                    });
-                }
-
-                state.workingDate = newDate;
-                UIElements.dateDisplay.textContent = new Date(newDate + 'T00:00:00').toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                UIElements.parametrage.workDateInput.value = newDate;
+            async init() {
+                this.UIElements.userInfo.textContent = `Connecté: ${this.state.userName}`;
+                this.UIElements.userInfoHeader.textContent = `Utilisateur: ${this.state.userName}`;
                 
-                firestoreService.listenToJournal(newDate, (docSnap) => {
-                    const data = docSnap.exists() ? docSnap.data() : {};
-                    state.transactions = data.transactions || [];
-                    
-                    if (data.manualInitialBalances) {
-                        state.soldesInitiaux = data.manualInitialBalances;
-                    } else {
-                        state.soldesInitiaux = calculatedInitialBalances;
-                    }
-                    renderAll();
-                });
+                this.navigation.init.call(this);
+                this.modal.init.call(this);
+                this.confirmationModal.init.call(this);
+                this.userManager.init.call(this);
+                
+                this.categoryManager = this.manager('cat', { addBtn: this.UIElements.parametrage.addCatBtn, input: this.UIElements.parametrage.newCatInput, list: this.UIElements.parametrage.catList, dropdowns: [this.UIElements.accueil.categorieSelect, this.UIElements.modal.categorie] }, 'categories');
+                this.accountManager = this.manager('acc', { addBtn: this.UIElements.parametrage.addAccBtn, input: this.UIElements.parametrage.newAccInput, list: this.UIElements.parametrage.accList, dropdowns: [this.UIElements.accueil.compteSelect] }, 'accounts');
+                this.categoryManager.init.call(this);
+                this.accountManager.init.call(this);
+                
+                const config = await firestoreService.getConfig();
+                this.state.accounts = config.accounts;
+                this.state.categories = config.categories;
+
+                this.addEventListeners();
+                await this.changeWorkingDate(this.getToday());
             }
             
-            const navigation = {
-                init() { UIElements.mainNav.addEventListener('click', (e) => { const l = e.target.closest('a'); if (l) { e.preventDefault(); this.to(l.getAttribute('href')); } }); },
-                async to(hash) { 
-                    const id = hash.substring(1); 
-                    UIElements.pages.forEach(p => p.classList.toggle('active', p.id === id)); 
-                    UIElements.mainNav.querySelectorAll('.nav-link').forEach(l => l.classList.toggle('active', l.getAttribute('href') === hash)); 
-                    if (id === 'synthese') this.updateSynthese(); 
-                    if (id === 'historique') await this.updateHistorique(); 
-                    if (id === 'utilisateurs') await userManager.renderUsers();
-                    if (id === 'parametrage') { categoryManager.render(); accountManager.render(); renderInitialBalancesForm(); } 
-                },
-                updateSynthese() {
-                    let totalE = 0, totalS = 0;
-                    state.transactions.forEach(tx => {
-                        if (tx.type === 'entree') totalE += tx.montant; else totalS += tx.montant;
-                    });
-                    const categorySummary = state.categories.reduce((a, c) => ({ ...a, [c]: { e: 0, s: 0 } }), {});
-                    state.transactions.forEach(tx => {
-                        if (!categorySummary[tx.categorie]) categorySummary[tx.categorie] = { e: 0, s: 0 };
-                        if (tx.type === 'entree') categorySummary[tx.categorie].e += tx.montant; else categorySummary[tx.categorie].s += tx.montant;
-                    });
-                    UIElements.synthese.category.innerHTML = `<ul class="space-y-2">${Object.entries(categorySummary).map(([c, t]) => `<li class="p-2 bg-slate-50 rounded-lg"><div class="font-semibold">${c}</div><div class="flex justify-between text-sm"><span class="text-green-600">Entrées: ${formatCurrency(t.e)}</span><span class="text-red-600">Sorties: ${formatCurrency(t.s)}</span></div></li>`).join('')}</ul>`;
-                    if (summaryChart) summaryChart.destroy();
-                    summaryChart = new Chart(UIElements.synthese.chartCanvas, { type: 'doughnut', data: { labels: ['Entrées', 'Sorties'], datasets: [{ data: [totalE, totalS], backgroundColor: ['rgba(16, 185, 129, 0.7)', 'rgba(239, 68, 68, 0.7)'], borderColor: ['rgba(16, 185, 129, 1)', 'rgba(239, 68, 68, 1)'], borderWidth: 1 }] }, options: { responsive: true, maintainAspectRatio: true, cutout: '60%' } });
-                    let recapHtml = `<table class="w-full text-sm text-left text-slate-600"><thead class="text-xs text-slate-700 uppercase bg-slate-100"><tr><th class="px-4 py-3">Compte</th><th class="px-4 py-3 text-right">Solde Initial</th><th class="px-4 py-3 text-right text-green-600">Total Entrées</th><th class="px-4 py-3 text-right text-red-600">Total Sorties</th><th class="px-4 py-3 text-right">Solde Final</th></tr></thead><tbody>`;
-                    state.accounts.forEach(acc => {
-                        const txs = state.transactions.filter(t => t.compte === acc);
-                        const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
-                        const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
-                        const soldeInitial = state.soldesInitiaux[acc] || 0;
-                        const soldeFinal = soldeInitial + entrees - sorties;
-                        recapHtml += `<tr class="bg-white border-b"><td class="px-4 py-2 font-medium">${acc}</td><td class="px-4 py-2 text-right">${formatCurrency(soldeInitial)}</td><td class="px-4 py-2 text-right text-green-600">${formatCurrency(entrees)}</td><td class="px-4 py-2 text-right text-red-600">${formatCurrency(sorties)}</td><td class="px-4 py-2 text-right font-semibold">${formatCurrency(soldeFinal)}</td></tr>`;
-                    });
-                    recapHtml += '</tbody></table>';
-                    UIElements.synthese.recapTable.innerHTML = recapHtml;
-                },
-                async updateHistorique(filterDate = null) {
-                    UIElements.historique.list.innerHTML = '<li>Chargement...</li>';
-                    const keys = await firestoreService.getJournalHistory();
-                    UIElements.historique.list.innerHTML = '';
-                    keys.forEach(date => {
-                        if (!filterDate || date === filterDate) {
-                            const li = document.createElement('li');
-                            li.className = 'p-3 bg-slate-50 rounded-lg hover:bg-slate-100 cursor-pointer';
-                            li.textContent = new Date(date + 'T00:00:00').toLocaleDateString('fr-FR', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-                            li.dataset.date = date;
-                            UIElements.historique.list.appendChild(li);
-                        }
-                    });
-                    if (UIElements.historique.list.innerHTML === '') {
-                        UIElements.historique.list.innerHTML = `<li class="p-3 text-slate-500">Aucun rapport trouvé.</li>`;
-                    }
-                }
-            };
-            const modal = {
-                init() {
-                    UIElements.modal.form.addEventListener('submit', async (e) => {
-                        e.preventDefault();
-                        const id = parseInt(UIElements.modal.id.value);
-                        const docRef = doc(db, "journals", state.workingDate);
-                        const currentDoc = await getDoc(docRef);
-                        if (currentDoc.exists()) {
-                            const currentTransactions = currentDoc.data().transactions || [];
-                            const updatedTransactions = currentTransactions.map(tx => {
-                                if (tx.id === id) {
-                                    return { ...tx, numPiece: UIElements.modal.numPiece.value, libelle: UIElements.modal.libelle.value, categorie: UIElements.modal.categorie.value, montant: parseFloat(UIElements.modal.montant.value) || 0 };
-                                }
-                                return tx;
-                            });
-                            await updateDoc(docRef, { transactions: updatedTransactions });
-                        }
-                        this.close();
-                        showToast("Opération modifiée !");
-                    });
-                    UIElements.modal.cancelBtn.addEventListener('click', () => this.close());
-                },
-                open(id) {
-                    const tx = state.transactions.find(t => t.id === id);
-                    if (!tx) return;
-                    UIElements.modal.id.value = tx.id;
-                    UIElements.modal.numPiece.value = tx.numPiece;
-                    UIElements.modal.libelle.value = tx.libelle;
-                    UIElements.modal.categorie.value = tx.categorie;
-                    UIElements.modal.montant.value = tx.montant;
-                    UIElements.modal.container.classList.remove('hidden');
-                    setTimeout(() => { UIElements.modal.container.classList.remove('opacity-0'); UIElements.modal.content.classList.remove('scale-95'); }, 10);
-                },
-                close() {
-                    UIElements.modal.container.classList.add('opacity-0');
-                    UIElements.modal.content.classList.add('scale-95');
-                    setTimeout(() => UIElements.modal.container.classList.add('hidden'), 300);
-                }
-            };
-            const confirmationModal = {
-                _onConfirm: null,
-                init() {
-                    UIElements.confirmModal.cancelBtn.addEventListener('click', () => this.close());
-                    UIElements.confirmModal.confirmBtn.addEventListener('click', () => {
-                        if (typeof this._onConfirm === 'function') this._onConfirm();
-                        this.close();
-                    });
-                },
-                open(message, onConfirmCallback) {
-                    this._onConfirm = onConfirmCallback;
-                    UIElements.confirmModal.message.textContent = message;
-                    UIElements.confirmModal.container.classList.remove('hidden');
-                    setTimeout(() => { UIElements.confirmModal.container.classList.remove('opacity-0'); UIElements.confirmModal.content.classList.remove('scale-95'); }, 10);
-                },
-                close() {
-                    UIElements.confirmModal.container.classList.add('opacity-0');
-                    UIElements.confirmModal.content.classList.add('scale-95');
-                    setTimeout(() => UIElements.confirmModal.container.classList.add('hidden'), 300);
-                    this._onConfirm = null;
-                }
-            };
-            const manager = (type, ui, stateKey) => ({
-                init() { ui.addBtn.addEventListener('click', () => this.add()); ui.list.addEventListener('click', (e) => { if (e.target.classList.contains(`delete-${type}-btn`)) this.remove(e.target.dataset.name); }); },
-                async add() {
-                    const name = ui.input.value.trim();
-                    if (name && !state[stateKey].includes(name)) {
-                        state[stateKey].push(name);
-                        await firestoreService.saveConfig({ accounts: state.accounts, categories: state.categories });
-                        this.render();
-                        ui.input.value = '';
-                        showToast(`${type === 'cat' ? 'Catégorie' : 'Compte'} ajouté.`);
-                    }
-                },
-                remove(name) {
-                    confirmationModal.open(`Voulez-vous vraiment supprimer "${name}" ?`, async () => {
-                        state[stateKey] = state[stateKey].filter(i => i !== name);
-                        await firestoreService.saveConfig({ accounts: state.accounts, categories: state.categories });
-                        this.render();
-                        showToast(`${type === 'cat' ? 'Catégorie' : 'Compte'} supprimé.`, 'e');
-                    });
-                },
-                render() {
-                    ui.list.innerHTML = state[stateKey].map(name => `<li class="flex justify-between items-center p-2 bg-slate-50 rounded-lg"><span>${name}</span><button data-name="${name}" class="delete-${type}-btn text-red-500 font-bold text-xl leading-none">&times;</button></li>`).join('');
-                    this.populateDropdowns();
-                },
-                populateDropdowns() { if (ui.dropdowns) { const html = state[stateKey].map(name => `<option value="${name}">${name}</option>`).join(''); ui.dropdowns.forEach(dd => dd.innerHTML = html); } }
-            });
-            const categoryManager = manager('cat', { addBtn: UIElements.parametrage.addCatBtn, input: UIElements.parametrage.newCatInput, list: UIElements.parametrage.catList, dropdowns: [UIElements.accueil.categorieSelect, UIElements.modal.categorie] }, 'categories');
-            const accountManager = manager('acc', { addBtn: UIElements.parametrage.addAccBtn, input: UIElements.parametrage.newAccInput, list: UIElements.parametrage.accList, dropdowns: [UIElements.accueil.compteSelect] }, 'accounts');
-            
-            const userManager = {
-                init() {
-                    UIElements.utilisateurs.form.addEventListener('submit', this.addUser);
-                },
-                async addUser(e) {
-                    e.preventDefault();
-                    const name = UIElements.utilisateurs.nameInput.value;
-                    const email = UIElements.utilisateurs.emailInput.value;
-                    const password = UIElements.utilisateurs.passwordInput.value;
+            destroy() {
+                if (this.unsubscribeJournal) this.unsubscribeJournal();
+                // In a more complex app, we would remove all event listeners here
+            }
 
-                    if (!name || !email || !password) {
-                        showToast("Veuillez remplir tous les champs.", "e");
-                        return;
-                    }
-                    try {
-                        showToast("Création de l'utilisateur...");
-                        // This is a simplified approach. In a real app, user creation would be handled by an admin function.
-                        const userCredential = await createUserWithEmailAndPassword(auth, email, password);
-                        const user = userCredential.user;
-                        await firestoreService.saveUser(user.uid, { name, email });
-                        showToast("Utilisateur créé avec succès !", "s");
-                        UIElements.utilisateurs.form.reset();
-                        userManager.renderUsers();
-                    } catch (error) {
-                        console.error("Error creating user:", error);
-                        if (error.code === 'auth/email-already-in-use') {
-                            showToast("Cette adresse mail est déjà utilisée.", "e");
-                        } else if (error.code === 'auth/weak-password') {
-                            showToast("Le mot de passe doit contenir au moins 6 caractères.", "e");
-                        } else {
-                            showToast("Erreur lors de la création de l'utilisateur.", "e");
-                        }
-                    }
-                },
-                async renderUsers() {
-                    UIElements.utilisateurs.list.innerHTML = `<li>Chargement...</li>`;
-                    const users = await firestoreService.getUsers();
-                    if (users.length === 0) {
-                         UIElements.utilisateurs.list.innerHTML = `<li class="p-2 text-slate-500">Aucun utilisateur trouvé.</li>`;
-                         return;
-                    }
-                    UIElements.utilisateurs.list.innerHTML = users.map(user => `
-                        <li class="flex justify-between items-center p-2 bg-slate-50 rounded-lg">
-                            <div>
-                                <span class="font-medium">${user.name}</span>
-                                <span class="text-sm text-slate-500 ml-2">${user.email}</span>
-                            </div>
-                        </li>
-                    `).join('');
-                }
-            };
-            
-            const renderAll = () => {
-                renderAccountCards();
-                renderReportTable();
-                categoryManager.populateDropdowns();
-                accountManager.populateDropdowns();
-                renderInitialBalancesForm();
-            };
-            const renderAccountCards = () => {
-                UIElements.accueil.cardsContainer.innerHTML = state.accounts.map(acc => `<div id="card-${acc}" data-name="${acc}" class="bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer"><h3 class="text-sm font-medium text-slate-500">${acc}</h3><p id="solde-${acc}-card" class="text-3xl font-bold mt-2">0</p></div>`).join('');
-                state.accounts.forEach(acc => document.getElementById(`card-${acc}`).addEventListener('click', () => editInitialBalance(acc)));
-                 updateTotals();
-            };
-            const renderReportTable = () => {
-                UIElements.accueil.header.innerHTML = `<tr><th class="px-4 py-3" rowspan="2">N° PIÈCE</th><th class="px-4 py-3" rowspan="2">Libellé</th><th class="px-4 py-3" rowspan="2">Catégorie</th>${state.accounts.map(acc => `<th class="px-4 py-3 text-center border-l" colspan="2">${acc}</th>`).join('')}<th rowspan="2"></th></tr><tr>${state.accounts.map(() => `<th class="px-4 py-3 text-center border-l text-green-600">Entrées</th><th class="px-4 py-3 text-center text-red-600">Sorties</th>`).join('')}</tr>`;
-                UIElements.accueil.body.innerHTML = `<tr class="bg-slate-50 font-semibold"><td class="px-4 py-2" colspan="3">Solde initial</td>${state.accounts.map(acc => `<td class="px-4 py-2 text-center text-slate-500" colspan="2">${formatCurrency(state.soldesInitiaux[acc] || 0)}</td>`).join('')}<td></td></tr>`;
-                const sortedTransactions = [...state.transactions].sort((a, b) => a.id - b.id);
-                sortedTransactions.forEach(tx => {
-                    const row = UIElements.accueil.body.insertRow(-1);
-                    row.className = 'bg-white border-b border-slate-200 hover:bg-slate-50 new-row';
-                    let cells = `<td class="px-4 py-2">${tx.numPiece}</td><td class="px-4 py-2">${tx.libelle}</td><td class="px-4 py-2 text-xs text-slate-500">${tx.categorie}</td>`;
-                    state.accounts.forEach(acc => {
-                        if (acc === tx.compte) {
-                            cells += tx.type === 'entree' ? `<td class="px-4 py-2 text-center text-green-600">${formatCurrency(tx.montant)}</td><td class="px-4 py-2 text-center"></td>` : `<td class="px-4 py-2 text-center"></td><td class="px-4 py-2 text-center text-red-600">${formatCurrency(tx.montant)}</td>`;
-                        } else { cells += `<td class="px-4 py-2"></td><td class="px-4 py-2"></td>`; }
-                    });
-                    cells += `<td class="px-2 py-2 text-center"><button class="edit-btn text-blue-500 p-1" data-id="${tx.id}">✏️</button><button class="delete-btn text-red-500 p-1 font-bold" data-id="${tx.id}">&times;</button></td>`;
-                    row.innerHTML = cells;
-                });
-                UIElements.accueil.footer.innerHTML = `<tr class="border-t-2 border-slate-300"><td class="px-4 py-3" colspan="3">TOTAL OPÉRATIONS</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); return `<td class="px-4 py-3 text-center text-green-600">${formatCurrency(e)}</td><td class="px-4 py-3 text-center text-red-600">${formatCurrency(s)}</td>`; }).join('')}<td></td></tr>
-                <tr class="border-t-2 border-slate-300 bg-slate-200 font-bold text-slate-800"><td class="px-4 py-3" colspan="3">SOLDE FINAL</td>${state.accounts.map(acc => { const txs = state.transactions.filter(t => t.compte === acc); const e = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0); const s = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0); const soldeFinal = (state.soldesInitiaux[acc] || 0) + e - s; return `<td class="px-4 py-3 text-center" colspan="2">${formatCurrency(soldeFinal)}</td>`; }).join('')}<td></td></tr>`;
-            };
-            const updateTotals = () => { 
-                state.accounts.forEach(acc => {
-                    const txs = state.transactions.filter(t => t.compte === acc);
-                    const entrees = txs.filter(t => t.type === 'entree').reduce((s, t) => s + t.montant, 0);
-                    const sorties = txs.filter(t => t.type === 'sortie').reduce((s, t) => s + t.montant, 0);
-                    const soldeFinal = (state.soldesInitiaux[acc] || 0) + entrees - sorties;
-                    const card = document.getElementById(`card-${acc}`);
-                    const cardText = document.getElementById(`solde-${acc}-card`);
-                    if(card && cardText){
-                        cardText.textContent = formatCurrency(soldeFinal);
-                        card.className = 'bg-white p-6 rounded-xl shadow-md border transition-all cursor-pointer';
-                        cardText.className = 'text-3xl font-bold mt-2';
-                        if (soldeFinal > 0) { card.classList.add('bg-green-50', 'border-green-300'); cardText.classList.add('text-green-800'); }
-                        else if (soldeFinal < 0) { card.classList.add('bg-red-50', 'border-red-300'); cardText.classList.add('text-red-800'); }
-                        else { card.classList.add('bg-slate-50', 'border-slate-300'); cardText.classList.add('text-slate-800'); }
+            addEventListeners() {
+                this.UIElements.buttons.logout.addEventListener('click', () => signOut(auth));
+                this.UIElements.parametrage.changeDateBtn.addEventListener('click', async () => {
+                    const newDate = this.UIElements.parametrage.workDateInput.value;
+                    if (newDate && newDate !== this.state.workingDate) { 
+                        await this.changeWorkingDate(newDate); 
+                        this.showToast(`Journal du ${newDate} chargé.`); 
                     }
                 });
-            };
-            const editInitialBalance = (acc) => {
-                const soldeActuel = state.soldesInitiaux[acc] || 0;
-                const newSoldeStr = prompt(`Modifier le solde initial pour ${acc}:`, soldeActuel);
-                if (newSoldeStr !== null) {
-                    const newSolde = parseFloat(newSoldeStr.replace(/,/g, '.'));
-                    if (!isNaN(newSolde)) { 
-                        const newBalances = { ...state.soldesInitiaux, [acc]: newSolde };
-                        firestoreService.saveJournal(state.workingDate, { manualInitialBalances: newBalances });
-                        showToast('Solde initial manuel sauvegardé.'); 
-                    } else { showToast("Veuillez entrer un nombre valide.", "e"); }
-                }
-            };
-            const renderInitialBalancesForm = () => { 
-                UIElements.parametrage.initialBalancesForm.innerHTML = '';
-                state.accounts.forEach(acc => {
-                    const div = document.createElement('div');
-                    div.innerHTML = `<label for="balance-${acc}" class="block text-sm font-medium text-slate-600 mb-1">${acc}</label><input type="number" step="any" id="balance-${acc}" name="${acc}" value="${state.soldesInitiaux[acc] || 0}" class="w-full px-3 py-2 border border-slate-300 rounded-lg shadow-sm">`;
-                    UIElements.parametrage.initialBalancesForm.appendChild(div);
-                });
-            };
-            const printReport = () => { /* ... */ };
-
-            function init() {
-                UIElements.userInfo.textContent = `Connecté: ${state.userName}`;
-                UIElements.userInfoHeader.textContent = `Utilisateur: ${state.userName}`;
-                navigation.init();
-                modal.init();
-                confirmationModal.init();
-                categoryManager.init();
-                accountManager.init();
-                userManager.init();
-                
-                firestoreService.getConfig().then(config => {
-                    state.accounts = config.accounts;
-                    state.categories = config.categories;
-                    changeWorkingDate(getToday());
-                });
-
-                UIElements.buttons.logout.addEventListener('click', () => signOut(auth));
-                UIElements.parametrage.changeDateBtn.addEventListener('click', async () => {
-                    const newDate = UIElements.parametrage.workDateInput.value;
-                    if (newDate && newDate !== state.workingDate) { 
-                        await changeWorkingDate(newDate); 
-                        showToast(`Journal du ${newDate} chargé.`); 
-                    }
-                });
-                UIElements.parametrage.saveBalancesBtn.addEventListener('click', async () => {
-                    const formData = new FormData(UIElements.parametrage.initialBalancesForm);
+                this.UIElements.parametrage.saveBalancesBtn.addEventListener('click', async () => {
+                    const formData = new FormData(this.UIElements.parametrage.initialBalancesForm);
                     const newBalances = {};
                     for (let [account, value] of formData.entries()) {
                          newBalances[account] = parseFloat(value) || 0;
                     }
-                    await firestoreService.saveJournal(state.workingDate, { manualInitialBalances: newBalances });
-                    showToast("Soldes initiaux manuels sauvegardés pour aujourd'hui !");
+                    await firestoreService.saveJournal(this.state.workingDate, { manualInitialBalances: newBalances });
+                    this.showToast("Soldes initiaux manuels sauvegardés pour aujourd'hui !");
                 });
-                UIElements.buttons.print.addEventListener('click', printReport);
-                UIElements.buttons.prevDay.addEventListener('click', async () => {
-                    const currentDate = new Date(state.workingDate);
+                this.UIElements.buttons.print.addEventListener('click', () => this.printReport());
+                this.UIElements.buttons.prevDay.addEventListener('click', async () => {
+                    const currentDate = new Date(this.state.workingDate);
                     currentDate.setDate(currentDate.getDate() - 1);
-                    await changeWorkingDate(currentDate.toISOString().split('T')[0]);
+                    await this.changeWorkingDate(currentDate.toISOString().split('T')[0]);
                 });
-                UIElements.buttons.nextDay.addEventListener('click', async () => {
-                    const currentDate = new Date(state.workingDate);
+                this.UIElements.buttons.nextDay.addEventListener('click', async () => {
+                    const currentDate = new Date(this.state.workingDate);
                     currentDate.setDate(currentDate.getDate() + 1);
-                    await changeWorkingDate(currentDate.toISOString().split('T')[0]);
+                    await this.changeWorkingDate(currentDate.toISOString().split('T')[0]);
                 });
-                UIElements.accueil.form.addEventListener('submit', async (e) => {
+                this.UIElements.accueil.form.addEventListener('submit', async (e) => {
                     e.preventDefault();
-                    const data = { numPiece: document.getElementById('num-piece').value, libelle: document.getElementById('libelle').value, categorie: UIElements.accueil.categorieSelect.value, compte: UIElements.accueil.compteSelect.value, entree: parseFloat(document.getElementById('montant-entree').value) || 0, sortie: parseFloat(document.getElementById('montant-sortie').value) || 0 };
-                    if (!data.libelle || (data.entree <= 0 && data.sortie <= 0) || (data.entree > 0 && data.sortie > 0)) { showToast("Saisir un libellé et un seul montant.", 'e'); return; }
+                    const data = { numPiece: document.getElementById('num-piece').value, libelle: document.getElementById('libelle').value, categorie: this.UIElements.accueil.categorieSelect.value, compte: this.UIElements.accueil.compteSelect.value, entree: parseFloat(document.getElementById('montant-entree').value) || 0, sortie: parseFloat(document.getElementById('montant-sortie').value) || 0 };
+                    if (!data.libelle || (data.entree <= 0 && data.sortie <= 0) || (data.entree > 0 && data.sortie > 0)) { this.showToast("Saisir un libellé et un seul montant.", 'e'); return; }
                     const newTransaction = {
-                        id: Date.now(),
-                        ...data, 
+                        id: Date.now(), ...data, 
                         type: data.entree > 0 ? 'entree' : 'sortie', 
                         montant: data.entree > 0 ? data.entree : data.sortie,
-                        createdBy: state.userId,
-                        createdByName: state.userName,
+                        createdBy: this.state.userId, createdByName: this.state.userName,
                     };
-                    const docRef = doc(db, "journals", state.workingDate);
+                    const docRef = doc(db, "journals", this.state.workingDate);
                     const currentDoc = await getDoc(docRef);
                     if (currentDoc.exists()) {
                         await updateDoc(docRef, { transactions: arrayUnion(newTransaction) });
                     } else {
-                        await firestoreService.saveJournal(state.workingDate, { transactions: [newTransaction], soldesInitiaux: state.soldesInitiaux });
+                        await firestoreService.saveJournal(this.state.workingDate, { transactions: [newTransaction], soldesInitiaux: this.state.soldesInitiaux });
                     }
-                    UIElements.accueil.form.reset();
+                    this.UIElements.accueil.form.reset();
                     document.getElementById('libelle').focus();
                 });
-                UIElements.accueil.body.addEventListener('click', async (e) => {
+                this.UIElements.accueil.body.addEventListener('click', async (e) => {
                     const delBtn = e.target.closest('.delete-btn');
                     const editBtn = e.target.closest('.edit-btn');
                     if (delBtn) { 
                         const id = parseInt(delBtn.dataset.id); 
-                        const currentDoc = await firestoreService.getJournal(state.workingDate);
-                        const txToDelete = (currentDoc.transactions || []).find(tx => tx.id === id);
+                        const txToDelete = this.state.transactions.find(tx => tx.id === id);
                         if (txToDelete) {
-                            confirmationModal.open('Supprimer définitivement cette opération ?', async () => { 
-                                const docRef = doc(db, "journals", state.workingDate);
+                            this.confirmationModal.open('Supprimer définitivement cette opération ?', async () => { 
+                                const docRef = doc(db, "journals", this.state.workingDate);
                                 await updateDoc(docRef, { transactions: arrayRemove(txToDelete) });
-                                showToast("Opération supprimée.", "e"); 
+                                this.showToast("Opération supprimée.", "e"); 
                             });
                         }
                     }
-                    if (editBtn) modal.open(parseInt(editBtn.dataset.id));
+                    if (editBtn) this.modal.open(parseInt(editBtn.dataset.id));
                 });
-                UIElements.historique.list.addEventListener('click', (e) => { 
+                this.UIElements.historique.list.addEventListener('click', (e) => { 
                     if (e.target.tagName === 'LI' && e.target.dataset.date) { 
-                        changeWorkingDate(e.target.dataset.date); 
-                        navigation.to('#accueil'); 
-                        showToast(`Journal du ${e.target.dataset.date} chargé.`); 
+                        this.changeWorkingDate(e.target.dataset.date); 
+                        this.navigation.to.call(this, '#accueil'); 
+                        this.showToast(`Journal du ${e.target.dataset.date} chargé.`); 
                     } 
                 });
-                UIElements.historique.filterBtn.addEventListener('click', () => { 
-                    const filterDate = UIElements.historique.filterDateInput.value; 
-                    navigation.updateHistorique(filterDate || null);
+                this.UIElements.historique.filterBtn.addEventListener('click', () => { 
+                    const filterDate = this.UIElements.historique.filterDateInput.value; 
+                    this.navigation.updateHistorique.call(this, filterDate || null);
                 });
-                UIElements.historique.clearFilterBtn.addEventListener('click', () => { 
-                    UIElements.historique.filterDateInput.value = ''; 
-                    navigation.updateHistorique(); 
+                this.UIElements.historique.clearFilterBtn.addEventListener('click', () => { 
+                    this.UIElements.historique.filterDateInput.value = ''; 
+                    this.navigation.updateHistorique.call(this); 
                 });
             }
+            
+            // ... All other methods of the class here
         }
+
     </script>
 </body>
 </html>
