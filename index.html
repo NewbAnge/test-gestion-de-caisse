@@ -134,7 +134,8 @@
                 Toastify({ text: "Email ou mot de passe incorrect.", duration: 3000, gravity: "bottom", position: "center", style: { background: "#EF4444" } }).showToast();
             }
         });
-
+        
+        // This function contains and initializes the entire application logic
         function runApp(user, userName) {
             const UIElements = {
                 mainNav: document.getElementById('main-nav'), pages: document.querySelectorAll('.page'), dateDisplay: document.getElementById('report-date-display'),
