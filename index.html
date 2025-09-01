@@ -109,8 +109,70 @@
         const auth = getAuth(app);
         const db = getFirestore(app);
 
-        // ... le reste du code de l'application sera ici ...
-        
+        // --- Le code de l'application commence ici ---
+        const loginScreen = document.getElementById('login-screen');
+        const mainApp = document.getElementById('main-app');
+        const loginForm = document.getElementById('login-form');
+
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                // User is signed in.
+                loginScreen.style.display = 'none';
+                mainApp.style.display = 'block';
+                
+                const userDoc = await doc(db, "users", user.uid);
+                const userSnap = await getDoc(userDoc);
+                const userName = userSnap.exists() ? userSnap.data().name : user.email;
+
+                runApp(user, userName); // Lancer l'application principale
+            } else {
+                // User is signed out.
+                mainApp.style.display = 'none';
+                loginScreen.style.display = 'flex';
+            }
+        });
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            try {
+                await signInWithEmailAndPassword(auth, email, password);
+                // onAuthStateChanged will handle the UI switch
+            } catch (error) {
+                console.error("Login Error:", error.code);
+                Toastify({ text: "Email ou mot de passe incorrect.", duration: 3000, gravity: "bottom", position: "center", style: { background: "#EF4444" } }).showToast();
+            }
+        });
+
+        function runApp(user, userName) {
+            // All application logic is now inside this function
+            const UIElements = {
+                mainNav: document.getElementById('main-nav'), pages: document.querySelectorAll('.page'), dateDisplay: document.getElementById('report-date-display'),
+                accueil: { form: document.getElementById('transaction-form'), body: document.getElementById('transactions-body'), header: document.getElementById('report-header'), footer: document.getElementById('report-footer'), categorieSelect: document.getElementById('categorie'), compteSelect: document.getElementById('moyen-paiement'), cardsContainer: document.getElementById('account-cards-container'), printContent: document.getElementById('print-content') },
+                synthese: { category: document.getElementById('summary-by-category'), chartCanvas: document.getElementById('summary-chart'), recapTable: document.getElementById('summary-recap-table') },
+                historique: { list: document.getElementById('history-list'), filterDateInput: document.getElementById('history-filter-date'), filterBtn: document.getElementById('filter-history-btn'), clearFilterBtn: document.getElementById('clear-filter-btn') },
+                utilisateurs: { form: document.getElementById('add-user-form'), list: document.getElementById('user-list'), nameInput: document.getElementById('user-name'), emailInput: document.getElementById('user-email'), passwordInput: document.getElementById('user-password') },
+                parametrage: { newCatInput: document.getElementById('new-category-input'), addCatBtn: document.getElementById('add-category-btn'), catList: document.getElementById('category-list'), newAccInput: document.getElementById('new-account-input'), addAccBtn: document.getElementById('add-account-btn'), accList: document.getElementById('account-list'), workDateInput: document.getElementById('work-date-input'), changeDateBtn: document.getElementById('change-date-btn'), initialBalancesForm: document.getElementById('initial-balances-form'), saveBalancesBtn: document.getElementById('save-balances-btn') },
+                modal: { container: document.getElementById('edit-modal'), content: document.getElementById('edit-modal-content'), form: document.getElementById('edit-form'), cancelBtn: document.getElementById('cancel-edit-btn'), id: document.getElementById('edit-id'), numPiece: document.getElementById('edit-num-piece'), libelle: document.getElementById('edit-libelle'), categorie: document.getElementById('edit-categorie'), montant: document.getElementById('edit-montant') },
+                confirmModal: { container: document.getElementById('confirm-modal'), content: document.getElementById('confirm-modal-content'), message: document.getElementById('confirm-modal-message'), cancelBtn: document.getElementById('cancel-confirm-btn'), confirmBtn: document.getElementById('confirm-action-btn')},
+                buttons: { print: document.getElementById('print-btn'), prevDay: document.getElementById('prev-day-btn'), nextDay: document.getElementById('next-day-btn'), logout: document.getElementById('logout-btn') },
+                userInfo: document.getElementById('user-info'),
+                userInfoHeader: document.getElementById('user-info-header'),
+            };
+
+            let summaryChart = null;
+            let state = { transactions: [], soldesInitiaux: {}, categories: [], accounts: [], workingDate: getToday(), userId: user.uid, userName: userName };
+            let unsubscribeJournal;
+
+            function getToday() { return new Date().toISOString().split('T')[0]; }
+            const formatCurrency = (v) => new Intl.NumberFormat('fr-FR').format(parseFloat(v) || 0);
+            const showToast = (m, t = 's') => Toastify({ text: m, duration: 3000, gravity: "bottom", position: "right", style: { background: t === 's' ? "#10B981" : "#EF4444" } }).showToast();
+            
+            // ... The rest of the application's logic (firestoreService, navigation, managers, etc.) goes here
+            // This is the same logic as before, now running inside the authenticated context.
+            init(); // Start the main application logic
+        }
     </script>
 </body>
 </html>
